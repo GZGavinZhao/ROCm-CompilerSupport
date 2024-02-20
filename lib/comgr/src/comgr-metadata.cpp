@@ -923,6 +923,82 @@ static constexpr const char *CLANG_OFFLOAD_BUNDLER_MAGIC =
 static constexpr size_t OffloadBundleMagicLen =
     strLiteralLength(CLANG_OFFLOAD_BUNDLER_MAGIC);
 
+struct GfxPattern {
+  StringRef root;
+  StringRef suffixes;
+};
+
+static bool matches(const GfxPattern& p, const StringRef s) {
+  if (p.root.size() + 1 != s.size()) {
+    return false;
+  }
+  if (0 != std::memcmp(p.root.data(), s.data(), p.root.size())) {
+    return false;
+  }
+  return p.suffixes.find(s[p.root.size()]) != std::string::npos;
+}
+
+
+static bool isGfx900EquivalentProcessor(const StringRef processor) {
+  return matches(GfxPattern{"gfx90", "029c"}, processor);
+}
+
+static bool isGfx900SupersetProcessor(const StringRef processor) {
+  return matches(GfxPattern{"gfx90", "0269c"}, processor);
+}
+
+static bool isGfx1030EquivalentProcessor(const StringRef processor) {
+  return matches(GfxPattern{"gfx103", "0123456"}, processor);
+}
+
+static bool isGfx1010SupsersetProcessor(const StringRef processor) {
+  return matches(GfxPattern{"gfx101", "0123"}, processor);
+}
+
+static bool isGfx1011EquivalentProcessor(const StringRef processor) {
+  return matches(GfxPattern{"gfx101", "12"}, processor);
+}
+
+static bool isProcessorsCompatible(const StringRef IsaProcessor, const StringRef CodeObjectProcessor) {
+  if (IsaProcessor == CodeObjectProcessor) {
+    return true;
+  } else if (isGfx900EquivalentProcessor(IsaProcessor) && isGfx900EquivalentProcessor(CodeObjectProcessor)) {
+    return true;
+  } else if (isGfx900SupersetProcessor(IsaProcessor) && isGfx900EquivalentProcessor(CodeObjectProcessor)) {
+    return true;
+  } else if (isGfx1030EquivalentProcessor(IsaProcessor) && isGfx1030EquivalentProcessor(CodeObjectProcessor)) {
+    return true;
+  } else if (isGfx1010SupsersetProcessor(IsaProcessor) && CodeObjectProcessor == "gfx1010") {
+    // RDNA1 is a little special. The hierarchy looks a bit like this, where the
+    // left means a superset of:
+    //
+    //          ┌──► gfx1011/gfx1012
+    //          │                   
+    // gfx1010 ─┤                   
+    //          │                   
+    //          └──► gfx1013        
+    //
+    // (according to https://llvm.org/docs/AMDGPU/AMDGPUAsmGFX1011.html and https://llvm.org/docs/AMDGPU/AMDGPUAsmGFX1013.html)
+    //
+    // This means that we can't simply mix-n-match host ISA and code
+    // object ISA like RDNA2, e.g. as long as host is some RDNA2 and code object
+    // is some RDNA2, then they're compatible. In practice, this means that for
+    // RDNA1, we have to handle the following cases:
+    //
+    // 1. code object gfx1010: compatible with any RDNA1 host.
+    // 2. code object gfx1011/gfx1012: compatible with only gfx1011/gfx1012 host
+    // 3. code object gfx1013: compatible with only gfx1013 host
+    //
+    // The current branch handles (1). The branch below handles (2). (3) doesn't
+    // need handling because we always returns `true` for identical ISAs.
+    return true;
+  } else if (isGfx1011EquivalentProcessor(IsaProcessor) && isGfx1011EquivalentProcessor(CodeObjectProcessor)) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 bool isCompatibleIsaName(StringRef IsaName, StringRef CodeObjectIsaName) {
   if (IsaName == CodeObjectIsaName) {
     return true;
@@ -938,7 +1014,8 @@ bool isCompatibleIsaName(StringRef IsaName, StringRef CodeObjectIsaName) {
     return false;
   }
 
-  if (CodeObjectIdent.Processor != IsaIdent.Processor) {
+  if (CodeObjectIdent.Processor != IsaIdent.Processor
+      && !isProcessorsCompatible(IsaIdent.Processor, CodeObjectIdent.Processor)) {
     return false;
   }
 

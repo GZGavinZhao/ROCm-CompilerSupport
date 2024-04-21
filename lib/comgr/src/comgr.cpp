@@ -48,8 +48,10 @@
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/IR/Constants.h"
+#include "clang/Driver/OffloadBundler.h"
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -700,6 +702,15 @@ amd_comgr_status_t AMD_COMGR_API
 
   if (!DataP || !DataP->hasValidDataKind() || !Size || !Bytes) {
     return AMD_COMGR_STATUS_ERROR_INVALID_ARGUMENT;
+  }
+
+  if (DataP->DataKind == AMD_COMGR_DATA_KIND_COMPRESSED_FATBIN) {
+    auto CompressedBuffer = MemoryBuffer::getMemBufferCopy(StringRef(Bytes, Size));
+    auto ResultOrErr = clang::CompressedOffloadBundle::decompress(*CompressedBuffer.get());
+    if (auto E = ResultOrErr.takeError()) {
+      return AMD_COMGR_STATUS_ERROR;
+    }
+    return DataP->setData(std::move(*ResultOrErr));
   }
 
   return DataP->setData(StringRef(Bytes, Size));
@@ -2208,6 +2219,7 @@ amd_comgr_status_t AMD_COMGR_API
 
   if (!DataP || !DataP->hasValidDataKind() ||
       !(DataP->DataKind == AMD_COMGR_DATA_KIND_FATBIN ||
+        DataP->DataKind == AMD_COMGR_DATA_KIND_COMPRESSED_FATBIN ||
         DataP->DataKind == AMD_COMGR_DATA_KIND_BYTES ||
         DataP->DataKind == AMD_COMGR_DATA_KIND_EXECUTABLE))
     return AMD_COMGR_STATUS_ERROR_INVALID_ARGUMENT;
